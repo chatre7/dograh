@@ -512,7 +512,7 @@ class MPSServiceKeyClient:
             if response.status_code == 200:
                 return response.json()
 
-            logger.error(
+            logger.warning(
                 "Failed to authorize MPS workflow run start: "
                 f"{response.status_code} - {response.text}"
             )
@@ -720,6 +720,9 @@ class MPSServiceKeyClient:
         provider: str,
         model: Optional[str] = None,
         language: Optional[str] = None,
+        q: Optional[str] = None,
+        gender: Optional[str] = None,
+        accent: Optional[str] = None,
         organization_id: Optional[int] = None,
         created_by: Optional[str] = None,
     ) -> dict:
@@ -745,6 +748,12 @@ class MPSServiceKeyClient:
                 params["model"] = model
             if language:
                 params["language"] = language
+            if q:
+                params["q"] = q
+            if gender:
+                params["gender"] = gender
+            if accent:
+                params["accent"] = accent
             response = await client.get(
                 f"{self.base_url}/api/v1/voice-proxy/{provider}/voices",
                 headers=self._get_headers(organization_id, created_by),

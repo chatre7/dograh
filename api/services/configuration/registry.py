@@ -15,6 +15,7 @@ from api.services.configuration.options import (
     AZURE_SPEECH_TTS_LANGUAGES,
     AZURE_SPEECH_TTS_VOICES,
     DEEPGRAM_FLUX_MULTILINGUAL_LANGUAGE_OPTIONS,
+    DEEPGRAM_FLUX_MULTILINGUAL_LANGUAGES,
     DEEPGRAM_LANGUAGES,
     DEEPGRAM_STT_MODELS,
     GLADIA_STT_LANGUAGES,
@@ -61,6 +62,7 @@ class ServiceProviders(str, Enum):
     DEEPGRAM = "deepgram"
     GROQ = "groq"
     OPENROUTER = "openrouter"
+    INWORLD = "inworld"
     CARTESIA = "cartesia"
     # NEUPHONIC = "neuphonic"
     ELEVENLABS = "elevenlabs"
@@ -94,6 +96,7 @@ class BaseServiceConfiguration(BaseModel):
         ServiceProviders.DEEPGRAM,
         ServiceProviders.GROQ,
         ServiceProviders.OPENROUTER,
+        ServiceProviders.INWORLD,
         ServiceProviders.ELEVENLABS,
         ServiceProviders.GOOGLE,
         ServiceProviders.AZURE,
@@ -249,6 +252,14 @@ GOOGLE_VERTEX_REALTIME_PROVIDER_MODEL_CONFIG = provider_model_config(
 DEEPGRAM_PROVIDER_MODEL_CONFIG = provider_model_config("Deepgram")
 ELEVENLABS_PROVIDER_MODEL_CONFIG = provider_model_config("ElevenLabs")
 CARTESIA_PROVIDER_MODEL_CONFIG = provider_model_config("Cartesia")
+INWORLD_PROVIDER_MODEL_CONFIG = provider_model_config(
+    "Inworld",
+    description=(
+        "Inworld AI streaming text-to-speech with built-in and cloned voices. "
+        "Defaults to the Ashley system voice on inworld-tts-2."
+    ),
+    provider_docs_url="https://docs.inworld.ai/tts/tts",
+)
 SARVAM_PROVIDER_MODEL_CONFIG = provider_model_config("Sarvam")
 CAMB_PROVIDER_MODEL_CONFIG = provider_model_config("Camb.ai")
 RIME_PROVIDER_MODEL_CONFIG = provider_model_config("Rime")
@@ -305,7 +316,6 @@ OPENROUTER_MODELS = [
     "openai/gpt-4.1-mini",
     "anthropic/claude-sonnet-4",
     "google/gemini-2.5-flash",
-    "google/gemini-2.0-flash",
     "meta-llama/llama-3.3-70b-instruct",
     "deepseek/deepseek-chat-v3-0324",
 ]
@@ -340,7 +350,7 @@ class GoogleLLMService(BaseLLMConfiguration):
     model_config = GOOGLE_PROVIDER_MODEL_CONFIG
     provider: Literal[ServiceProviders.GOOGLE] = ServiceProviders.GOOGLE
     model: str = Field(
-        default="gemini-2.0-flash",
+        default="gemini-2.5-flash",
         description="Gemini model on Google AI Studio (not Vertex).",
         json_schema_extra={"examples": GOOGLE_MODELS, "allow_custom_input": True},
     )
@@ -957,6 +967,9 @@ class DograhTTSService(BaseTTSConfiguration):
 
 
 CARTESIA_TTS_MODELS = ["sonic-3.5", "sonic-3"]
+INWORLD_TTS_MODELS = ["inworld-tts-2"]
+INWORLD_TTS_VOICES = ["Ashley"]
+INWORLD_TTS_LANGUAGES = ["en-US"]
 
 
 @register_tts
@@ -983,6 +996,46 @@ class CartesiaTTSConfiguration(BaseTTSConfiguration):
         default="en",
         description="Cartesia language code for TTS synthesis (e.g. 'en', 'tr', 'fr', 'de').",
         json_schema_extra={"allow_custom_input": True},
+    )
+
+
+@register_tts
+class InworldTTSConfiguration(BaseTTSConfiguration):
+    model_config = INWORLD_PROVIDER_MODEL_CONFIG
+    provider: Literal[ServiceProviders.INWORLD] = ServiceProviders.INWORLD
+    model: str = Field(
+        default="inworld-tts-2",
+        description="Inworld TTS model.",
+        json_schema_extra={"examples": INWORLD_TTS_MODELS, "allow_custom_input": True},
+    )
+    voice: str = Field(
+        default="Ashley",
+        description=(
+            "Inworld voice ID. Use Ashley for the default warm English voice, "
+            "or a workspace voice ID for a cloned/custom voice."
+        ),
+        json_schema_extra={"examples": INWORLD_TTS_VOICES, "allow_custom_input": True},
+    )
+    language: str = Field(
+        default="en-US",
+        description="BCP-47 language code for synthesis.",
+        json_schema_extra={
+            "examples": INWORLD_TTS_LANGUAGES,
+            "allow_custom_input": True,
+        },
+    )
+    speed: float = Field(
+        default=1.0,
+        ge=0.25,
+        le=4.0,
+        description="Speech speed multiplier.",
+    )
+    delivery_mode: Literal["STABLE", "BALANCED", "CREATIVE"] = Field(
+        default="BALANCED",
+        description=(
+            "Controls stability versus expressiveness for inworld-tts-2 "
+            "(STABLE, BALANCED, or CREATIVE)."
+        ),
     )
 
 
@@ -1228,6 +1281,7 @@ TTSConfig = Annotated[
         OpenAITTSService,
         ElevenlabsTTSConfiguration,
         CartesiaTTSConfiguration,
+        InworldTTSConfiguration,
         DograhTTSService,
         SarvamTTSConfiguration,
         CambTTSConfiguration,
@@ -1343,6 +1397,10 @@ class GoogleSTTConfiguration(BaseSTTConfiguration):
 # Dograh STT Service
 DOGRAH_STT_MODELS = ["default"]
 DOGRAH_STT_LANGUAGES = DEEPGRAM_LANGUAGES
+# Languages auto-detected when the Dograh STT language is "multi". Dograh STT runs
+# Deepgram Flux multilingual under the hood, which only auto-detects this subset —
+# not the full DOGRAH_STT_LANGUAGES list offered for explicit single-language selection.
+DOGRAH_MULTILINGUAL_AUTODETECT_LANGUAGES = DEEPGRAM_FLUX_MULTILINGUAL_LANGUAGES
 
 
 @register_stt
@@ -1668,7 +1726,7 @@ class AzureOpenAIEmbeddingsConfiguration(BaseEmbeddingsConfiguration):
     )
 
 
-DOGRAH_EMBEDDING_MODELS = ["default"]
+DOGRAH_EMBEDDING_MODELS = ["dograh_embedding_v1"]
 
 
 @register_embeddings
@@ -1676,7 +1734,7 @@ class DograhEmbeddingsConfiguration(BaseEmbeddingsConfiguration):
     model_config = DOGRAH_PROVIDER_MODEL_CONFIG
     provider: Literal[ServiceProviders.DOGRAH] = ServiceProviders.DOGRAH
     model: str = Field(
-        default="default",
+        default="dograh_embedding_v1",
         description="Dograh-managed embedding model.",
         json_schema_extra={"examples": DOGRAH_EMBEDDING_MODELS},
     )

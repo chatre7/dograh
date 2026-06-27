@@ -33,8 +33,37 @@ const HANDLED_SERVICE_ERROR_TYPES = new Set([
     'quota_exceeded',
     'insufficient_credits',
     'invalid_service_key',
+    'service_key_org_mismatch',
     'quota_check_failed',
 ]);
+
+const LOCALHOST_API_BASE_URL = 'http://localhost:8000';
+const LOCALHOST_API_HEALTH_URL = `${LOCALHOST_API_BASE_URL}/api/v1/health`;
+const LOCALHOST_API_PROBE_TIMEOUT_MS = 1500;
+
+function isLocalhostUi() {
+    if (typeof window === 'undefined') return false;
+
+    return ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname);
+}
+
+async function probeLocalhostApi() {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), LOCALHOST_API_PROBE_TIMEOUT_MS);
+
+    try {
+        const response = await fetch(LOCALHOST_API_HEALTH_URL, {
+            cache: 'no-store',
+            signal: controller.signal,
+        });
+
+        return response.ok;
+    } catch {
+        return false;
+    } finally {
+        window.clearTimeout(timeout);
+    }
+}
 
 export const useWebSocketRTC = ({ workflowId, workflowRunId, accessToken, initialContextVariables, onNodeTransition }: UseWebSocketRTCProps) => {
     const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('idle');
@@ -108,10 +137,40 @@ export const useWebSocketRTC = ({ workflowId, workflowRunId, accessToken, initia
     const currentAllowInterruptRef = useRef<boolean | undefined>(undefined);
     const interruptWarningShownRef = useRef(false);
 
-    // Get WebSocket URL from client configuration
-    const getWebSocketUrl = useCallback(() => {
-        // Get base URL from client configuration
-        const baseUrl = client.getConfig().baseUrl || 'http://127.0.0.1:8000';
+    const getWebSocketUrl = useCallback(async () => {
+        // An explicitly configured backend URL always wins. When set, honor it
+        // verbatim and skip the localhost autodetect below — the operator has
+        // told us exactly where the API lives. Read the env var directly (not
+        // client.getConfig().baseUrl) so we can distinguish "explicitly set"
+        // from the client's window.location.origin fallback.
+        const configuredBackendUrl = process.env.NEXT_PUBLIC_BACKEND_URL;
+
+        let baseUrl: string;
+
+        if (configuredBackendUrl) {
+            baseUrl = configuredBackendUrl;
+        } else if (isLocalhostUi()) {
+            // No backend URL configured and the UI is on localhost: the client
+            // would otherwise fall back to window.location.origin (the UI port,
+            // e.g. 3010), which is wrong for the API. Local Docker exposes the
+            // API on localhost:8000. WebSocket upgrades cannot pass through the
+            // Next.js route-handler HTTP proxy, so connect to the API directly
+            // when that port is reachable. A Next.js rewrite/proxy for the
+            // upgrade was considered, but we keep the WebRTC signaling path
+            // direct so signaling and the API's ICE/WebRTC handling terminate
+            // at the same local endpoint.
+            const localhostApiReachable = await probeLocalhostApi();
+
+            if (!localhostApiReachable) {
+                throw new Error('Dograh API is not reachable at http://localhost:8000. Ensure the api container is running and port 8000 is published.');
+            }
+
+            baseUrl = LOCALHOST_API_BASE_URL;
+        } else {
+            // Same-origin deployment: UI and API share an origin.
+            baseUrl = client.getConfig().baseUrl || 'http://127.0.0.1:8000';
+        }
+
         // Convert HTTP to WS protocol
         const wsUrl = baseUrl.replace(/^http/, 'ws');
         return `${wsUrl}/api/v1/ws/signaling/${workflowId}/${workflowRunId}?token=${accessToken}`;
@@ -292,9 +351,10 @@ export const useWebSocketRTC = ({ workflowId, workflowRunId, accessToken, initia
         return pc;
     };
 
-    const connectWebSocket = useCallback(() => {
+    const connectWebSocket = useCallback(async () => {
+        const wsUrl = await getWebSocketUrl();
+
         return new Promise<void>((resolve, reject) => {
-            const wsUrl = getWebSocketUrl();
             logger.info(`Connecting to WebSocket: ${wsUrl}`);
 
             const ws = new WebSocket(wsUrl);
@@ -307,7 +367,7 @@ export const useWebSocketRTC = ({ workflowId, workflowRunId, accessToken, initia
 
             ws.onerror = (error) => {
                 logger.error('WebSocket error:', error);
-                reject(error);
+                reject(new Error(`WebSocket connection failed at ${wsUrl}`));
             };
 
             ws.onclose = (event) => {
@@ -774,6 +834,9 @@ export const useWebSocketRTC = ({ workflowId, workflowRunId, accessToken, initia
             }
         } catch (error) {
             logger.error('Failed to start connection:', error);
+            if (error instanceof Error) {
+                setPermissionError(error.message);
+            }
             setConnectionStatus('failed');
         } finally {
             setIsStarting(false);

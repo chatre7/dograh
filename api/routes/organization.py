@@ -17,7 +17,10 @@ from api.enums import OrganizationConfigurationKey, PostHogEvent
 from api.schemas.ai_model_configuration import (
     DOGRAH_DEFAULT_LANGUAGE,
     DOGRAH_DEFAULT_VOICE,
+    DOGRAH_SPEED_MAX,
+    DOGRAH_SPEED_MIN,
     DOGRAH_SPEED_OPTIONS,
+    DOGRAH_SPEED_STEP,
     OrganizationAIModelConfigurationResponse,
     OrganizationAIModelConfigurationV2,
 )
@@ -38,7 +41,11 @@ from api.schemas.telephony_phone_number import (
     PhoneNumberUpdateRequest,
     ProviderSyncStatus,
 )
-from api.services.auth.depends import get_user, get_user_with_selected_organization
+from api.services.auth.depends import (
+    _sync_posthog_organization_mps_billing_v2_status,
+    get_user,
+    get_user_with_selected_organization,
+)
 from api.services.configuration.ai_model_configuration import (
     check_for_masked_keys_in_ai_model_configuration_v2,
     compile_ai_model_configuration_v2,
@@ -54,6 +61,7 @@ from api.services.configuration.check_validity import UserConfigurationValidator
 from api.services.configuration.defaults import DEFAULT_SERVICE_PROVIDERS
 from api.services.configuration.masking import is_mask_of, mask_key, mask_user_config
 from api.services.configuration.registry import (
+    DOGRAH_MULTILINGUAL_AUTODETECT_LANGUAGES,
     DOGRAH_STT_LANGUAGES,
     REGISTRY,
     DograhTTSService,
@@ -261,7 +269,13 @@ async def get_model_configuration_v2_defaults(
             "voices": [DOGRAH_DEFAULT_VOICE],
             "allow_custom_input": _dograh_allows_custom_voice(),
             "speeds": list(DOGRAH_SPEED_OPTIONS),
+            "speed_range": {
+                "min": DOGRAH_SPEED_MIN,
+                "max": DOGRAH_SPEED_MAX,
+                "step": DOGRAH_SPEED_STEP,
+            },
             "languages": DOGRAH_STT_LANGUAGES,
+            "multilingual_languages": DOGRAH_MULTILINGUAL_AUTODETECT_LANGUAGES,
             "defaults": {
                 "voice": DOGRAH_DEFAULT_VOICE,
                 "speed": 1.0,
@@ -373,9 +387,10 @@ async def migrate_model_configuration_v2(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=exc.args[0])
 
+    billing_account_status = None
     if DEPLOYMENT_MODE != "oss":
         try:
-            await ensure_hosted_mps_billing_account_v2(
+            billing_account_status = await ensure_hosted_mps_billing_account_v2(
                 organization_id,
                 created_by=str(user.provider_id),
             )
@@ -398,6 +413,14 @@ async def migrate_model_configuration_v2(
         organization_id=organization_id,
         fallback_user_config=legacy,
     )
+    if DEPLOYMENT_MODE != "oss":
+        _sync_posthog_organization_mps_billing_v2_status(
+            organization_id,
+            uses_mps_billing_v2=bool(
+                billing_account_status
+                and billing_account_status.get("billing_mode") == "v2"
+            ),
+        )
     return await _model_configuration_v2_response(
         user=user,
         configuration=configuration,

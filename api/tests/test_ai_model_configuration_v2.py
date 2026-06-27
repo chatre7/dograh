@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from pydantic import ValidationError
@@ -55,17 +55,31 @@ def test_dograh_v2_compiles_to_effective_managed_pipeline_with_embeddings():
     assert effective.stt.provider == "dograh"
     assert effective.stt.language == "multi"
     assert effective.embeddings.provider == "dograh"
-    assert effective.embeddings.model == "default"
+    assert effective.embeddings.model == "dograh_embedding_v1"
     assert effective.managed_service_version == 2
 
 
-def test_dograh_v2_rejects_non_predefined_speed():
+def test_dograh_v2_accepts_numeric_speed_in_registry_range():
+    config = OrganizationAIModelConfigurationV2(
+        mode="dograh",
+        dograh=DograhManagedAIModelConfiguration(
+            api_key="mps-secret",
+            speed=1.5,
+        ),
+    )
+
+    effective = compile_ai_model_configuration_v2(config)
+
+    assert effective.tts.speed == 1.5
+
+
+def test_dograh_v2_rejects_out_of_range_speed():
     with pytest.raises(ValidationError):
         OrganizationAIModelConfigurationV2(
             mode="dograh",
             dograh=DograhManagedAIModelConfiguration(
                 api_key="mps-secret",
-                speed=1.5,
+                speed=2.5,
             ),
         )
 
@@ -118,7 +132,7 @@ async def test_byok_realtime_validator_does_not_require_stt_or_tts():
                     "llm": {
                         "provider": "google",
                         "api_key": "google-llm-key",
-                        "model": "gemini-2.0-flash",
+                        "model": "gemini-2.5-flash",
                     },
                 },
             },
@@ -140,7 +154,7 @@ async def test_pipeline_validator_requires_stt_and_tts_when_not_realtime():
         llm=GoogleLLMService(
             provider="google",
             api_key="google-llm-key",
-            model="gemini-2.0-flash",
+            model="gemini-2.5-flash",
         ),
         realtime=GoogleRealtimeLLMConfiguration(
             provider="google_realtime",
@@ -236,6 +250,33 @@ def test_legacy_all_dograh_pipeline_converts_to_dograh_v2():
 
     assert config.mode == "dograh"
     assert config.dograh.api_key == "mps-secret"
+
+
+def test_legacy_dograh_pipeline_conversion_preserves_numeric_speed():
+    legacy = EffectiveAIModelConfiguration(
+        llm=DograhLLMService(
+            provider="dograh",
+            api_key=["mps-secret"],
+            model="default",
+        ),
+        tts=DograhTTSService(
+            provider="dograh",
+            api_key=["mps-secret"],
+            model="default",
+            voice="default",
+            speed=1.5,
+        ),
+        stt=DograhSTTService(
+            provider="dograh",
+            api_key=["mps-secret"],
+            model="default",
+        ),
+    )
+
+    config = convert_legacy_ai_model_configuration_to_v2(legacy)
+
+    assert config.mode == "dograh"
+    assert config.dograh.speed == 1.5
 
 
 def test_legacy_mixed_dograh_pipeline_converts_to_dograh_v2():
@@ -401,6 +442,7 @@ async def test_migrate_model_configuration_v2_initializes_hosted_mps_billing(
     ensure_billing = AsyncMock(return_value={"billing_mode": "v2"})
     upsert = AsyncMock()
     migrate_workflows = AsyncMock()
+    sync_posthog_billing = Mock()
 
     monkeypatch.setattr(organization_routes, "DEPLOYMENT_MODE", "saas")
     monkeypatch.setattr(
@@ -438,6 +480,11 @@ async def test_migrate_model_configuration_v2_initializes_hosted_mps_billing(
         "_model_configuration_v2_response",
         AsyncMock(return_value=expected_response),
     )
+    monkeypatch.setattr(
+        organization_routes,
+        "_sync_posthog_organization_mps_billing_v2_status",
+        sync_posthog_billing,
+    )
 
     user = SimpleNamespace(
         id=7,
@@ -456,4 +503,5 @@ async def test_migrate_model_configuration_v2_initializes_hosted_mps_billing(
         organization_id=42,
         fallback_user_config=legacy,
     )
+    sync_posthog_billing.assert_called_once_with(42, uses_mps_billing_v2=True)
     assert response == expected_response

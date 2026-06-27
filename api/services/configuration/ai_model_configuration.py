@@ -16,7 +16,8 @@ from api.enums import OrganizationConfigurationKey
 from api.schemas.ai_model_configuration import (
     DOGRAH_DEFAULT_LANGUAGE,
     DOGRAH_DEFAULT_VOICE,
-    DOGRAH_SPEED_OPTIONS,
+    DOGRAH_SPEED_MAX,
+    DOGRAH_SPEED_MIN,
     BYOKAIModelConfiguration,
     BYOKPipelineAIModelConfiguration,
     BYOKRealtimeAIModelConfiguration,
@@ -315,6 +316,7 @@ def convert_legacy_ai_model_configuration_to_v2(
 
 
 def dograh_embeddings_base_url() -> str:
+    # AsyncOpenAI appends "/embeddings"; MPS exposes that under /api/v1/llm.
     return f"{MPS_API_URL}/api/v1/llm"
 
 
@@ -436,7 +438,11 @@ def _convert_any_dograh_legacy_configuration(
     dograh_key: str,
 ) -> OrganizationAIModelConfigurationV2:
     speed = getattr(configuration.tts, "speed", 1.0)
-    if speed not in DOGRAH_SPEED_OPTIONS:
+    try:
+        speed = float(speed)
+    except (TypeError, ValueError):
+        speed = 1.0
+    if not DOGRAH_SPEED_MIN <= speed <= DOGRAH_SPEED_MAX:
         speed = 1.0
     return OrganizationAIModelConfigurationV2(
         mode="dograh",
